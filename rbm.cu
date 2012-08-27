@@ -8,17 +8,18 @@ Rbm::Rbm(int train, int valid, int v, int h)
 	h_size = h;
 	w_size = v*h;
 
+
 	//known sizes
 	wij_size = w_size * sizeof(float);
 	hid_size = h_size * sizeof(float);
 	vis_size = v_size * sizeof(float);
 
 	//constants for now
-	epoch = 50; //50
+	epoch = 40; //50
 	batch = 10;
-	gibbs = 1;
-	steps = 1;
-	lr = 0.05;
+	gibbs = 10;
+	steps = 5;
+	lr = 0.0005;
 
 }
 
