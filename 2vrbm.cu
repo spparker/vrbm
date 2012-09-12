@@ -16,16 +16,23 @@
 
 #define V_SIZE 784
 #define H_SIZE 512
+#define H2_SIZE 512
 
 //CUDA Functions
 __global__ void calcHb(float* v0, float* h1, float* bj, float* wij, float* rnd);
+__global__ void calcH2b(float* v0, float* h1, float* bj, float* wij, float* rnd);
 __global__ void calcVp(float* h1, float* v0, float* ai, float* wij);
+__global__ void calcV2p(float* h1, float* v0, float* ai, float* wij);
 __global__ void calcHp(float* v0, float* h1, float* bj, float* wij);
+__global__ void calcH2p(float* v0, float* h1, float* bj, float* wij);
+__global__ void calcHpb(float* v0, float* h1, float* bj, float* wij);
 __global__ void calcVoneH(float* h1, float* v0, float* wij);
 
 __global__ void zeroDw(float* dwij, int h, int w);
 __global__ void calcDw(float* v0, float* h0, float* v1, float* h1, float* dwij);
+__global__ void calcD2w(float* v0, float* h0, float* v1, float* h1, float* dwij);
 __global__ void updateW(float* dwij, float* W, float rate, int batch);
+__global__ void update2W(float* dwij, float* W, float rate, int batch);
 
 __global__ void zeroDbias(float* b);
 __global__ void calcDbias(float* v0, float* v1, float* Dbias);
@@ -43,12 +50,17 @@ __global__ void calcFEleft(float* v0, float* v1, float* ai);
 void show_hidden();
 void show_visible();
 void histogram_w();
+void histogram_w2();
 void show_converge(float a, float b, float w);
 void history_w(float w);
 void history_weights();
 
 //Calculation Functions
 void compare_free_energy();
+
+//2nd order functions
+void convert_train();
+void init_rand_h2();
 
 Rbm* my_rbm;
 curandGenerator_t d_rand;
@@ -59,7 +71,7 @@ list<float> change_hist[10];
 list<float> weight_hist[10];
 
 //defines which weights to watch
-const int w_watch[10] = {88,888,8888,88888,333,3333,33333,333333,191919,55555};
+const int w_watch[10] = {1111,22222,3333,44444,5555,66666,7777,88888,9999,12000};
 const float w_color[10][3] = {{1.0,0.0,0.0}, {0.0,1.0,0.0}, {0.0,0.0,1.0}, {0.8,0.8,0.2}, {1.0,0.0,1.0},
 								{0.0,1.0,1.0}, {1.0,0.5,0.0}, {0.0,1.0,0.5}, {0.5,0.0,1.0}, {1.0,0.0,0.5}};
 
@@ -90,6 +102,50 @@ void think()
 
 }
 
+void deep_think()
+{
+	glClearColor(1.0, 1.0, 1.0, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glOrtho(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0);
+
+    curandGenerateUniform(d_rand, (float *) d_hrand, my_rbm->h_size);
+
+    /*float* fake_rand = (float*)malloc(my_rbm->hid_size);
+    for(int i=0;i<H_SIZE;i++)
+    {
+    	fake_rand[i] = 0.5;
+    }
+    cudaMemcpy(d_rand, fake_rand, my_rbm->hid_size, cudaMemcpyHostToDevice);
+
+    free(fake_rand);*/
+    //cudaMemcpy(my_rbm->d_hiddenX, my_rbm->d_hidden2X, my_rbm->hid_size, cudaMemcpyDeviceToDevice);
+	  // my_rbm->set_hiddenX();
+	   //show_hidden();
+
+	   calcH2b<<<16,32>>>(my_rbm->d_hidden2X, my_rbm->d_hiddenX, my_rbm->d_c, my_rbm->d_wjk, d_hrand);
+		   //my_rbm->set_hiddenX();
+		   //show_hidden();
+
+	   calcVp<<<8,98>>>(my_rbm->d_hiddenX, my_rbm->d_visibleX, my_rbm->d_a, my_rbm->d_wij);
+
+	   my_rbm->set_visibleX();
+	   show_visible();
+
+	    curandGenerateUniform(d_rand, (float *) d_hrand, my_rbm->h_size);
+	    calcHb<<<16,32>>>(my_rbm->d_visibleX, my_rbm->d_hiddenX, my_rbm->d_b, my_rbm->d_wij, d_hrand);
+		   //my_rbm->set_hiddenX();
+		   //show_hidden();
+
+	    curandGenerateUniform(d_rand, (float *) d_hrand, my_rbm->h_size);
+	    calcH2b<<<16,32>>>(my_rbm->d_hiddenX, my_rbm->d_hidden2X, my_rbm->d_d, my_rbm->d_wjk, d_hrand);
+
+
+		glFlush();
+
+   	glutPostRedisplay();
+
+}
+
 void hidden_transform()
 {
 	glClearColor(1.0, 1.0, 1.0, 1.0);
@@ -105,6 +161,45 @@ void hidden_transform()
 
 	   my_rbm->set_visibleX();
 	   show_visible();
+
+	   ht++;
+
+	   if (ht>100)
+	   {
+		   ht=0;
+		   n++;
+		   if(n>=512)
+		   {
+			   n=0;
+		   }
+	   }
+
+		glFlush();
+
+   	glutPostRedisplay();
+}
+
+void hidden2_transform()
+{
+	glClearColor(1.0, 1.0, 1.0, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glOrtho(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0);
+
+
+    float* one_hidden2 = (float*)malloc(my_rbm->hid2_size);
+    memset(one_hidden2,0.0,my_rbm->hid2_size);
+    one_hidden2[n] = 1.0;
+    cudaMemcpy(my_rbm->d_hidden20, one_hidden2, my_rbm->hid2_size, cudaMemcpyHostToDevice);
+    //calcHpb<<<16,32>>>(my_rbm->d_hidden20, my_rbm->d_hidden0, my_rbm->d_c, my_rbm->d_wjk);
+	//calcVoneH<<<8,98>>>(my_rbm->d_hidden0, my_rbm->d_visibleX, my_rbm->d_wij);
+    calcVoneH<<<16,32>>>(my_rbm->d_hidden20, my_rbm->d_hiddenX, my_rbm->d_wjk);
+    calcVoneH<<<8,98>>>(my_rbm->d_hiddenX, my_rbm->d_visibleX, my_rbm->d_wij);
+
+	   my_rbm->set_visibleX();
+	   show_visible();
+
+    	//my_rbm->set_hidden0();
+    	//show_hidden();
 
 	   ht++;
 
@@ -346,6 +441,235 @@ void learn()
     //glutPostRedisplay();
 }
 
+void learn2()
+{
+	glClearColor(1.0, 1.0, 1.0, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glOrtho(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0);
+
+
+#ifdef TIMING
+ cudaEvent_t start, stop;
+ cudaEventCreate(&start);
+ cudaEventCreate(&stop);
+ float elapsed;
+#endif
+
+
+
+    //Single EPOCH
+    //for(int n=0;n<(my_rbm->num_train/my_rbm->batch);n++)
+
+#ifdef TIMING
+ cudaEventRecord(start, 0);
+#endif
+    {
+		//Zero deltas
+		zeroDw<<<16,32>>>(my_rbm->d_dwjk, my_rbm->h_size, my_rbm->h2_size);
+		zeroDbias<<<1,my_rbm->h_size>>>(my_rbm->d_dc);
+		zeroDbias<<<1,my_rbm->h2_size>>>(my_rbm->d_dd);
+
+		for(int b=0;b<my_rbm->batch;b++)
+		{
+			my_rbm->grab_convert_sample();
+
+
+			for(int g=0;g<my_rbm->gibbs;g++)
+			{
+				//Random Number Generation
+
+
+
+			   curandGenerateUniform(d_rand, (float *) d_hrand, my_rbm->h2_size);
+
+/*
+#ifdef TIMING
+ cudaEventRecord(stop, 0);
+ cudaEventSynchronize(stop);
+ cudaEventElapsedTime(&elapsed, start, stop);
+ printf ("Random Generation %f ms\n", elapsed);
+#endif
+*/
+
+ 	 	 	 //H0 Step
+/*
+#ifdef TIMING
+ cudaEventRecord(start, 0);
+#endif
+*/
+			   //calcHb<<<16,32>>>(my_rbm->d_visible0, my_rbm->d_hidden0, my_rbm->d_b, my_rbm->d_wij, d_hrand, my_rbm->v_size, my_rbm->h_size); //H0 (MCMC Step with sampled binary units.)
+			   calcH2b<<<16,32>>>(my_rbm->d_hidden0, my_rbm->d_hidden20, my_rbm->d_d, my_rbm->d_wjk, d_hrand); //H0 (MCMC Step with sampled binary units.)
+			   //my_rbm->set_hidden0();
+			   //show_hidden();
+/*
+#ifdef TIMING
+ cudaEventRecord(stop, 0);
+ cudaEventSynchronize(stop);
+ cudaEventElapsedTime(&elapsed, start, stop);
+ printf ("H0 step %f ms\n", elapsed);
+#endif
+*/
+
+
+
+/*
+#ifdef TIMING
+ cudaEventRecord(start, 0);
+#endif
+*/
+				calcV2p<<<16,32>>>(my_rbm->d_hidden20, my_rbm->d_hiddenX, my_rbm->d_c, my_rbm->d_wjk);
+				//my_rbm->set_visibleX();
+				//show_visible();
+/*
+#ifdef TIMING
+ cudaEventRecord(stop, 0);
+ cudaEventSynchronize(stop);
+ cudaEventElapsedTime(&elapsed, start, stop);
+ printf ("V1 step %f ms\n", elapsed);
+#endif
+*/
+
+				for(int s=1;s<my_rbm->steps;s++)
+				{
+					calcH2b<<<16,32>>>(my_rbm->d_hiddenX, my_rbm->d_hidden2X, my_rbm->d_d, my_rbm->d_wjk, d_hrand); //H0 (MCMC Step with sampled binary units.)
+					//my_rbm->set_hiddenX();
+					//show_hidden();
+					calcV2p<<<16,32>>>(my_rbm->d_hidden2X, my_rbm->d_hiddenX, my_rbm->d_c, my_rbm->d_wjk);
+					//my_rbm->set_visibleX();
+					//show_visible();
+				}
+/*
+#ifdef TIMING
+ cudaEventRecord(start, 0);
+#endif
+*/
+				calcH2p<<<16,32>>>(my_rbm->d_hiddenX, my_rbm->d_hidden2X, my_rbm->d_d, my_rbm->d_wjk); //HX (MCMC Step with P(Vx|Ho)-> P(Hx|Vx)
+				//my_rbm->set_hiddenX();
+				//show_hidden();
+
+/*
+#ifdef TIMING
+ cudaEventRecord(stop, 0);
+ cudaEventSynchronize(stop);
+ cudaEventElapsedTime(&elapsed, start, stop);
+ printf ("Hp step %f ms\n", elapsed);
+#endif
+*/
+
+/*
+#ifdef TIMING
+ cudaEventRecord(start, 0);
+#endif
+*/
+				calcD2w<<<16,32>>>(my_rbm->d_hidden0, my_rbm->d_hidden20, my_rbm->d_hiddenX, my_rbm->d_hidden2X, my_rbm->d_dwjk); //Change in weights based on VoHo - VxHx
+/*
+#ifdef TIMING
+ cudaEventRecord(stop, 0);
+ cudaEventSynchronize(stop);
+ cudaEventElapsedTime(&elapsed, start, stop);
+ printf ("Dw calc %f ms\n", elapsed);
+#endif
+*/
+				calcDbias<<<1,my_rbm->h_size>>>(my_rbm->d_hidden0, my_rbm->d_hiddenX, my_rbm->d_dc); //Change in bias TO visible units Vo - Vx
+				calcDbias<<<1,my_rbm->h2_size>>>(my_rbm->d_hidden20, my_rbm->d_hidden2X, my_rbm->d_dd); //Chane in bias TO hidden units Ho - Hx
+			}
+
+		}
+
+
+		//Calculate Updates
+		update2W<<<16,32>>>(my_rbm->d_dwjk, my_rbm->d_wjk, my_rbm->lr, my_rbm->batch * my_rbm->gibbs);
+		updateBias<<<1,my_rbm->h_size>>>(my_rbm->d_dc, my_rbm->d_c, my_rbm->lr, my_rbm->batch * my_rbm->gibbs);
+		updateBias<<<1,my_rbm->h2_size>>>(my_rbm->d_dd, my_rbm->d_d, my_rbm->lr, my_rbm->batch * my_rbm->gibbs);
+
+
+		sumDelta<<<1,1>>>(my_rbm->d_dwjk, my_rbm->d_dwjk_sum, my_rbm->w2_size);
+		sumDelta<<<1,1>>>(my_rbm->d_dc, my_rbm->d_dc_sum, my_rbm->h_size);
+		sumDelta<<<1,1>>>(my_rbm->d_dd, my_rbm->d_dd_sum, my_rbm->h2_size);
+
+/*
+		float sum_c, sum_d, sum_w;
+
+		cudaMemcpy(&sum_c, my_rbm->d_dc_sum, sizeof(float), cudaMemcpyDeviceToHost);
+		cudaMemcpy(&sum_d, my_rbm->d_dd_sum, sizeof(float), cudaMemcpyDeviceToHost);
+		cudaMemcpy(&sum_w, my_rbm->d_dwjk_sum, sizeof(float), cudaMemcpyDeviceToHost);
+*/
+		//show_converge(sum_a, sum_b, sum_w);
+		//history_w(sum_w);
+		//history_weights();
+		histogram_w2();
+
+		//Test 1 step on sample
+		/*my_rbm->set_visible_train(888);
+		calcHb<<<16,32>>>(my_rbm->d_visible0, my_rbm->d_hidden0, my_rbm->d_b, my_rbm->d_wij, d_hrand); //H0 (MCMC Step with sampled binary units.)
+		calcVp<<<8,98>>>(my_rbm->d_hidden0, my_rbm->d_visibleX, my_rbm->d_a, my_rbm->d_wij);
+		my_rbm->set_visibleX();
+		show_visible();*/
+
+		//my_rbm->set_hidden0();
+		//show_hidden();
+
+
+
+
+		//Calculate energy of validation set
+		/*float zero = 0;
+		cudaMemcpy(d_E, zero,sizeof(float),cudaMemcpyHostToDevice); //zero energy
+		for(int v=1;v<=my_rbm->num_valid;v++)
+		{
+			my_rbm->set_visible_train(num_train-v);
+			calcHb<<<16,32>>>(my_rbm->d_visible0, my_rbm->d_hidden0, my_rbm->d_b, my_rbm->d_wij, d_hrand, my_rbm->v_size, my_rbm->h_size); //H0 (MCMC Step with sampled binary units.)
+			calcE<<<1,1>>>(my_rbm->d_visible0, my_rbm->d_hidden0, my_rbm->d_E, my_rbm->v_size, my_rbm->h_size);
+
+
+		}*/
+
+		   /*float* tmp = (float*)malloc(my_rbm->hid_size);
+		   cudaMemcpy(tmp, my_rbm->d_hidden0,my_rbm->hid_size,cudaMemcpyDeviceToHost);*/
+		//show weights
+		/*int test[30] = {1200,50,450,3884,23,4394,666,8888, 9430, 3430,
+						56054, 45423, 42524, 42352, 43267, 94543, 43530, 23454, 4958, 90394,
+						43, 84732, 12395, 34519, 23414, 68759, 7948, 398, 9548, 20934};
+		show_weight(30,test);*/
+
+		glFlush();
+    }
+
+    //Epoch
+    n++;
+    if(n < (my_rbm->num_train/my_rbm->batch))
+    {
+    	//printf("n=%d",n);
+    	glutPostRedisplay();
+    }
+    else
+    {
+    	printf("Epoch %d complete!\n",e);
+    	//new epoch
+    	n=0;
+    	e++;
+
+    	//adjust learning parameters
+    	//my_rbm->lr -= 0.001;
+    	if(e>35)
+    	{
+    		my_rbm->lr *= .9;
+    	}
+
+    	if(e < my_rbm->epoch)
+    		glutPostRedisplay();
+    	else
+    		my_rbm->save_layer2("rbm_5_2.param");
+    }
+#ifdef TIMING
+ cudaEventRecord(stop, 0);
+ cudaEventSynchronize(stop);
+ cudaEventElapsedTime(&elapsed, start, stop);
+ printf ("1Batch update: %f ms\n", elapsed);
+#endif
+    //glutPostRedisplay();
+}
+
 /* Main method - main entry point of application
 the freeglut library does the window creation work for us,
 regardless of the platform. */
@@ -354,12 +678,16 @@ int main(int argc, char** argv)
 	//-------------------------------------
 	// CUDA Setup
 	//-------------------------------------
-	my_rbm = new Rbm(60000,6000,784,512);
+	my_rbm = new Rbm(60000,6000,784,512, 512);
 	my_rbm->alloc_mem();
 	my_rbm->load_data("train-images.idx3-ubyte");
-	my_rbm->init_params();
-	//if(!my_rbm->load_layer("rbm_4.param"))
-		//return -1;
+	//my_rbm->init_params();
+	if(!my_rbm->load_layer("rbm_4.param"))
+		return -1;
+	//convert_train();
+	//my_rbm->init_params2();
+	if(!my_rbm->load_layer2("rbm_4_2.param"))
+		return -1;
 
 	curandCreateGenerator(&d_rand, CURAND_RNG_PSEUDO_MTGP32);
 	srand((unsigned)time(0));
@@ -379,15 +707,27 @@ int main(int argc, char** argv)
     glutInitWindowSize(1000,1000);
     glutInitWindowPosition(100,100);
     glutCreateWindow("Visual Restricted Boltzmann Machine");
-    glutDisplayFunc(learn);
+    //glutDisplayFunc(learn);
+    //glutDisplayFunc(learn2);
     //my_rbm->grab_sample();
     //glutDisplayFunc(think);
     //glutDisplayFunc(hidden_transform);
+    //glutDisplayFunc(hidden2_transform);
+    init_rand_h2();
+
+    float* fake_rand = (float*)malloc(my_rbm->hid_size);
+    for(int i=0;i<H_SIZE;i++)
+    {
+    	fake_rand[i] = 0.5;
+    }
+    cudaMemcpy(d_rand, fake_rand, my_rbm->hid_size, cudaMemcpyHostToDevice);
+
+    glutDisplayFunc(deep_think);
 
     ht=0;
     e=0;
     n=0;
-    //glutMainLoop();
+    glutMainLoop();
 
     //compare_free_energy();
 
@@ -585,8 +925,11 @@ void histogram_w()
 	float buffer = 0.01;
 	float width = (2.0/20.0) - buffer;
 
-	float scale = 100.0;
-		float d_scale = 100000.0;
+	//float scale = 100.0;
+		//float d_scale = 100000.0;
+
+	float scale = 1.0;
+	float d_scale = 1.0;
 
 		//draw references
 		glColor3f(0.0,0.0,0.0);
@@ -627,6 +970,70 @@ void histogram_w()
 			//glPolygonStipple(1, 0xAAAA);
 			//glEnable(GL_POLYGON_STIPPLE);
 			glColor4f(w_color[l][0],w_color[l][1],w_color[l][2], 0.2f);
+			h_off = -1.0 + ((2*l)+1)*(width+buffer);
+			glBegin(GL_POLYGON);
+				glVertex2f(h_off, 0);
+				glVertex2f(h_off, dw_val);
+				glVertex2f(h_off + width/2, dw_val);
+				glVertex2f(h_off + width/2, 0);
+			glEnd();
+		}
+
+		//free memory
+		delete(w);
+		delete(dw);
+
+	return;
+}
+
+void histogram_w2()
+{
+
+	float buffer = 0.01;
+	float width = (2.0/20.0) - buffer;
+
+	float scale = 10.0;
+		float d_scale = 1000.0;
+
+		//draw references
+		glColor3f(0.0,0.0,0.0);
+		glPointSize(100.0f);
+		glEnable(GL_POINT_SMOOTH);
+		glDisable(GL_LINE_STIPPLE);
+		glBegin(GL_LINES);
+			//0 axis
+			glVertex2f(-1.0,0.0);
+			glVertex2f(1.0,0.0);
+		glEnd();
+
+
+		//transfer memory
+		float* w = (float*)malloc(my_rbm->wjk_size);
+		float* dw = (float*)malloc(my_rbm->wjk_size);
+		cudaMemcpy(w, my_rbm->d_wjk, my_rbm->wjk_size, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dw, my_rbm->d_dwjk, my_rbm->wjk_size, cudaMemcpyDeviceToHost);
+
+		for(int l=0;l<10;l++)
+		{
+			float w_val = w[w_watch[l]] * scale;
+			float dw_val = (dw[w_watch[l]]/(my_rbm->batch * my_rbm->gibbs)) * my_rbm->lr * d_scale;
+
+			//draw weights
+			//glDisable(GL_POLYGON_STIPPLE);
+			glColor3f(w_color[l][0],w_color[l][1],w_color[l][2]);
+			float h_off = -1.0 + 2*l*(width+buffer);
+			//display weights
+			glBegin(GL_POLYGON);
+				glVertex2f(h_off, 0);
+				glVertex2f(h_off, w_val);
+				glVertex2f(h_off + width, w_val);
+				glVertex2f(h_off + width, 0);
+			glEnd();
+
+			//draw changes
+			//glPolygonStipple(1, 0xAAAA);
+			//glEnable(GL_POLYGON_STIPPLE);
+			glColor3f(w_color[l][0]/2,w_color[l][1]/2,w_color[l][2]/2);
 			h_off = -1.0 + ((2*l)+1)*(width+buffer);
 			glBegin(GL_POLYGON);
 				glVertex2f(h_off, 0);
@@ -746,6 +1153,36 @@ void compare_free_energy()
 	return;
 }
 
+/*===================================================================
+ * 			SECOND LAYER FUNCTIONS
+ ===================================================================*/
+
+void convert_train()
+{
+	printf("Converting Training Data to Layer2...");
+	for(int i=0;i<my_rbm->num_train;i++)
+	{
+		my_rbm->set_visible_train(i);
+		calcHpb<<<16,32>>>(my_rbm->d_visible0, my_rbm->d_hidden0, my_rbm->d_b, my_rbm->d_wij);
+
+		my_rbm->add_convert(i);
+
+	}
+	printf("Completed!\n");
+}
+
+void init_rand_h2()
+{
+	srand((unsigned)time(0));
+	float* h2_rand = (float*)malloc(H2_SIZE * sizeof(float));
+	for(int k=0;k<H2_SIZE;k++)
+	{
+		h2_rand[k] = (float)rand() > (float)RAND_MAX/2.0f;
+		//printf("[%f]",h2_rand[k]);
+	}
+
+	cudaMemcpy(my_rbm->d_hidden2X,h2_rand,my_rbm->hid_size,cudaMemcpyHostToDevice);
+}
 
 /*===================================================================
  * 			CUDA FUNCTIONS
@@ -775,6 +1212,37 @@ __global__ void calcHb(float* v0, float* h1, float* bj, float* wij, float* rnd)
 
 }
 
+__global__ void calcH2b(float* v0, float* h1, float* bj, float* wij, float* rnd)
+{
+	int h_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+	float sum = bj[h_idx];
+	for(int i=0;i<H_SIZE;i++)
+	{
+		sum += v0[i] * wij[ i*H2_SIZE + h_idx];
+	}
+	float prob = 1 / (1 + __expf(-1 * sum));
+
+	//printf("p(H[%d]=1|v) = %f <> %f\n",h_idx, prob, rnd[h_idx]);
+
+	h1[h_idx] = (prob > rnd[h_idx]);
+
+}
+
+__global__ void calcHpb(float* v0, float* h1, float* bj, float* wij)
+{
+	int h_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+	float sum = bj[h_idx];
+	for(int i=0;i<V_SIZE;i++)
+	{
+		sum += v0[i] * wij[ i*H_SIZE + h_idx];
+	}
+	float prob = 1 / (1 + __expf(-1 * sum));
+
+	//printf("p(H[%d]=1|v) = %f <> %f\n",h_idx, prob, rnd[h_idx]);
+
+	h1[h_idx] = (prob > 0.5);
+}
+
 /*------------------------------------------------------------------
  *  							CALC Vp
  * Probability of a single hidden unit given h0
@@ -789,6 +1257,18 @@ __global__ void calcVp(float* h1, float* v0, float* ai, float* wij)
 	for(int j=0;j<H_SIZE;j++)
 	{
 		sum += h1[j] * wij[ v_idx*H_SIZE + j];
+	}
+	v0[v_idx] = 1 / (1 + __expf(-1 * sum));
+	//printf("p(V0[%d]=1|h) = %f\n",v_idx,v0[v_idx]);
+}
+
+__global__ void calcV2p(float* h1, float* v0, float* ai, float* wij)
+{
+	int v_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+	float sum = ai[v_idx];
+	for(int j=0;j<H2_SIZE;j++)
+	{
+		sum += h1[j] * wij[ v_idx*H2_SIZE + j];
 	}
 	v0[v_idx] = 1 / (1 + __expf(-1 * sum));
 	//printf("p(V0[%d]=1|h) = %f\n",v_idx,v0[v_idx]);
@@ -827,6 +1307,18 @@ __global__ void calcHp(float* v0, float* h1, float* bj, float* wij)
 	//printf("p(H1[%d]=1|v) = %f\n",h_idx,h1[h_idx]);
 }
 
+__global__ void calcH2p(float* v0, float* h1, float* bj, float* wij)
+{
+	int h_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+	float sum = bj[h_idx];
+	for(int i=0;i<H_SIZE;i++)
+	{
+		sum += v0[i] * wij[ i*H2_SIZE + h_idx];
+	}
+	h1[h_idx] = 1 / (1 + __expf(-1 * sum));
+	//printf("p(H1[%d]=1|v) = %f\n",h_idx,h1[h_idx]);
+}
+
 
 /*------------------------------------------------------------------
  *  							CALC DW
@@ -840,6 +1332,21 @@ __global__ void calcDw(float* v0, float* h0, float* v1, float* h1, float* dwij)
     for(int i=0;i<V_SIZE;i++)
     {
             dwij[i*H_SIZE+j] += (v0[i]*h0[j]) - (v1[i]*h1[j]);
+            //printf("(%f)", dwij[i*H1_SIZE+j]);
+            /*if(j == 50 && i>200 && i<205)
+                printf("dw[%d,%d]=%f\t",i,j,dwij[i*h+j]);
+            if(j== 50 && i==205)
+            	printf("dw[%d,%d]=%f\n",i,j,dwij[i*h+j]);*/
+    }
+    return;
+}
+
+__global__ void calcD2w(float* v0, float* h0, float* v1, float* h1, float* dwij)
+{
+    int j = threadIdx.x + blockIdx.x*blockDim.x;
+    for(int i=0;i<H_SIZE;i++)
+    {
+            dwij[i*H2_SIZE+j] += (v0[i]*h0[j]) - (v1[i]*h1[j]);
             //printf("(%f)", dwij[i*H1_SIZE+j]);
             /*if(j == 50 && i>200 && i<205)
                 printf("dw[%d,%d]=%f\t",i,j,dwij[i*h+j]);
@@ -882,6 +1389,22 @@ __global__ void updateW(float* dwij, float* W, float rate, int batch)
     return;
 }
 
+__global__ void update2W(float* dwij, float* W, float rate, int batch)
+{
+    int j = threadIdx.x + blockIdx.x*blockDim.x;
+    for(int i=0;i<H_SIZE;i++)
+    {
+            W[i*H2_SIZE+j] += rate * (dwij[i*H2_SIZE+j]/ (float)batch);
+
+        /*if(j == 50 && i>200 && i<205)
+            printf("w[%d,%d]=%f\t",i,j,W[i*w+j]);
+        if(j== 50 && i==205)
+        	printf("w[%d,%d]=%f\n",i,j,W[i*w+j]);*/
+
+    }
+    return;
+}
+
 
 
 __global__ void calcDbias(float* v0, float* v1, float* Dbias)
@@ -892,8 +1415,6 @@ __global__ void calcDbias(float* v0, float* v1, float* Dbias)
 __global__ void updateBias(float* Dbias, float* b, float rate, int batch)
 {
 	b[threadIdx.x] += (Dbias[threadIdx.x]/ batch) * rate;
-	if(threadIdx.x < 10)
-	printf("b=%f\n",b[threadIdx.x]);
 }
 __global__ void zeroDbias(float* Dbias)
 {

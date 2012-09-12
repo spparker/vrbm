@@ -1,18 +1,22 @@
 #include "rbm.h"
 
-Rbm::Rbm(int train, int valid, int v, int h)
+Rbm::Rbm(int train, int valid, int v, int h, int h2)
 {
 	num_train =train;
 	num_valid =valid;
 	v_size = v;
 	h_size = h;
+	h2_size = h2;
 	w_size = v*h;
+	w2_size = h*h2;
 
 
 	//known sizes
 	wij_size = w_size * sizeof(float);
 	hid_size = h_size * sizeof(float);
 	vis_size = v_size * sizeof(float);
+	wjk_size = w2_size * sizeof(float);
+	hid2_size = h2_size * sizeof(float);
 
 	//constants for now
 	epoch = 40; //50
@@ -28,14 +32,22 @@ void Rbm::alloc_mem()
 	//weights
 	cudaMalloc((void**)&d_wij,wij_size);
 	cudaMalloc((void**)&d_dwij,wij_size);
+	cudaMalloc((void**)&d_wjk,wjk_size);
+	cudaMalloc((void**)&d_dwjk,wjk_size);
 
 	//bias
 	cudaMalloc((void**)&d_a,vis_size);
 	cudaMalloc((void**)&d_b,hid_size);
+	cudaMalloc((void**)&d_c,hid_size);
+	cudaMalloc((void**)&d_d,hid2_size);
 	cudaMalloc((void**)&d_da,vis_size);
 	cudaMalloc((void**)&d_db,hid_size);
+	cudaMalloc((void**)&d_dc,hid_size);
+	cudaMalloc((void**)&d_dd,hid2_size);
 
 	//Setup Visible & Hidden Units
+	cudaMalloc((void**)&d_hidden20,hid_size);
+	cudaMalloc((void**)&d_hidden2X,hid_size);
 	cudaMalloc((void**)&d_hidden0,hid_size);
 	cudaMalloc((void**)&d_hiddenX,hid_size);
 	cudaMalloc((void**)&d_visibleX,vis_size);
@@ -45,10 +57,17 @@ void Rbm::alloc_mem()
 	cudaMalloc((void**)&d_dwij_sum, sizeof(float));
 	cudaMalloc((void**)&d_da_sum, sizeof(float));
 	cudaMalloc((void**)&d_db_sum, sizeof(float));
+	cudaMalloc((void**)&d_dwjk_sum, sizeof(float));
+	cudaMalloc((void**)&d_dc_sum, sizeof(float));
+	cudaMalloc((void**)&d_dd_sum, sizeof(float));
 
 	//Setup host memory for displaying
 	hidden_out = (float*) malloc(hid_size);
 	visible_out = (float*) malloc(vis_size);
+
+	//Conerted TRaining Data
+	convert_data_size = num_train * h_size * sizeof(float);
+	cudaMalloc((void**)&d_convert_data, convert_data_size);
 
 }
 
@@ -112,6 +131,74 @@ void Rbm::init_params()
 	//free(bj);
 }
 
+
+void Rbm::init_params2()
+{
+
+	printf("Initializing Layer2 Parameters...");
+	//Setup Weights | i->j | Visible 0 -> Hidden 1
+	float* wjk = (float*)malloc(wjk_size);
+	srand((unsigned)time(0));
+	//Approximate Gaussian u=0 z=0.01
+	for (int i=0;i<w2_size;i++)
+	{
+		float central = 0;
+		for(int c=0;c<100;c++)
+		{
+			float u = (float)rand() / (float)RAND_MAX;
+			central+= (2*u -1)*0.1;
+		}
+		central /= 100;
+		wjk[i] = central;
+	}
+
+	cudaMemcpy(d_wjk, wjk, wjk_size,cudaMemcpyHostToDevice);
+	//free(wij);
+
+
+	//Hidden Bias = -2 to encourage sparsity
+	float dk[h2_size];
+	for (int k=0;k<h2_size;k++)
+	{
+		dk[k] = -2.0;
+	}
+
+
+	//Visible Bias = log[Pi/(1 - Pi)]
+	float cj[h_size];
+	float* convert_data = (float*)malloc(convert_data_size);
+	cudaMemcpy(convert_data, d_convert_data, convert_data_size, cudaMemcpyDeviceToHost);
+	for (int j=0;j<h_size;j++)
+	{
+		int sum = 0;
+		//Calc Pi
+		for (int n=0;n<num_train;n++)
+		{
+			sum += convert_data[n*h_size + j];
+		}
+		//avoid log(0) = -inf
+		if(sum == 0)
+			sum = 1;
+		float Pi = (float)sum / num_train;
+		cj[j] = log(Pi / (1-Pi));
+		//printf("Pi=%f | ai[%d])=%f\n",Pi,i,log(Pi / (1-Pi)));
+	}
+
+
+	//Setup Bias
+	cudaMemcpy(d_c, cj,hid_size,cudaMemcpyHostToDevice);
+	cudaMemcpy(d_d, dk,hid2_size,cudaMemcpyHostToDevice);
+
+	//float *d_hrand;
+	//cudaMalloc((void **)&d_hrand, hid_size);
+
+	printf("Completed!\n");
+	return;
+	//Clean up
+	//free(ai);
+	//free(bj);
+}
+
 void Rbm::save_layer(char* output_file)
 {
 	printf("Saving Layer...");
@@ -134,6 +221,36 @@ void Rbm::save_layer(char* output_file)
 		o_file.write((char*)ai,vis_size);
 		o_file.seekp(wij_size + vis_size);
 		o_file.write((char*)bj,hid_size);
+		o_file.close();
+		printf("Completed\n");
+	}
+	else
+		printf("Failed\n");
+	return;
+}
+
+void Rbm::save_layer2(char* output_file)
+{
+	printf("Saving Layer2...");
+	ofstream o_file;
+	o_file.open(output_file, ios::binary);
+
+	//place data on host
+	float* wjk = (float*) malloc(wjk_size);
+	float dk[h2_size];
+	float cj[h_size];
+
+	cudaMemcpy(wjk, d_wjk, wjk_size,cudaMemcpyDeviceToHost);
+	cudaMemcpy(cj, d_c,hid_size,cudaMemcpyDeviceToHost);
+	cudaMemcpy(dk, d_d,hid2_size,cudaMemcpyDeviceToHost);
+
+	if(o_file.is_open())
+	{
+		o_file.write((char*)wjk,wjk_size);
+		o_file.seekp(wjk_size);
+		o_file.write((char*)cj,hid_size);
+		o_file.seekp(wjk_size + hid_size);
+		o_file.write((char*)dk,hid2_size);
 		o_file.close();
 		printf("Completed\n");
 	}
@@ -191,12 +308,79 @@ int Rbm::load_layer(char* input_file)
 	}
 }
 
+int Rbm::load_layer2(char* input_file)
+{
+	printf("Loading Layer2 from %s...",input_file);
+	ifstream i_file;
+	i_file.open(input_file, ios::binary);
+	if(i_file.is_open())
+	{
+		float* wjk = (float*) malloc(wjk_size);
+		float dk[h2_size];
+		float cj[h_size];
+		//load weights
+		for(int n=0;n<w2_size;n++)
+		{
+			i_file.seekg(n*sizeof(float));
+			i_file.read((char*)&wjk[n],sizeof(float));
+			//printf("w[%d]=%f ",n,w[n]);
+		}
+		//load a
+		for(int i=0;i<h_size;i++)
+		{
+			i_file.seekg(sizeof(float)*h2_size*h_size + i*sizeof(float));
+			i_file.read((char*)&cj[i],sizeof(float));
+			//printf("a[%d]=%f\t",i,a[i]);
+		}
+		printf("\n");
+		//load b
+		for(int j=0;j<h2_size;j++)
+		{
+			i_file.seekg(sizeof(float)*h2_size*h_size + h_size*sizeof(float) + j*sizeof(float));
+			i_file.read((char*)&dk[j],sizeof(float));
+			//printf("b[%d]=%f\t",j,b[j]);
+		}
+		i_file.close();
+
+		cudaMemcpy(d_wjk, wjk, wjk_size,cudaMemcpyHostToDevice);
+		cudaMemcpy(d_c, cj,hid_size,cudaMemcpyHostToDevice);
+		cudaMemcpy(d_d, dk,hid2_size,cudaMemcpyHostToDevice);
+
+
+		printf("Completed!\n");
+		return 1;
+	}
+	else
+	{
+		printf("Failed to open file\n");
+		return 0;
+	}
+}
+
+
 //Grabs a random sample and sets as visible layer
 void Rbm::grab_sample()
 {
 	int sample = rand() % (num_train - num_valid);
 	d_visible0 = &d_train_data[sample*v_size];
 
+	return;
+}
+
+void Rbm::add_convert(int i)
+{
+	cudaMemcpy(&d_convert_data[i*h_size],d_hidden0,hid_size,cudaMemcpyDeviceToDevice);
+
+	return;
+}
+
+
+void Rbm::grab_convert_sample()
+{
+	int sample = rand() % (num_train - num_valid);
+	//printf("sample_loc=%d\n",sample*h_size);
+	d_hidden0 = &d_convert_data[sample*h_size];
+	//set_hidden0();
 	return;
 }
 
