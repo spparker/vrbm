@@ -1,4 +1,5 @@
 echo "||Building Visual Restricted Boltzmann Machine||"
-nvcc vrbm.cu -arch=sm_21 -o vrbm -L/usr/local/cuda/lib64 -lcurand
-//echo "||Building Converter||"
-//nvcc convert.cu -arch=sm_21 -o convert -L/usr/local/cuda/lib64 -lcurand
+nvcc vrbm.cu -arch=sm_21 -o vrbm -L/usr/local/cuda/lib64 -lcurand -lGL -lglut
+echo "vRBM Built!"
+##echo "||Building Converter||"
+##nvcc convert.cu -arch=sm_21 -o convert -L/usr/local/cuda/lib64 -lcurand
